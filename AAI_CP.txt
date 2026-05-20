@@ -1,0 +1,44 @@
+
+
+Academic Rules
+What is the minimum attendance required to appear for exams?
+What happens if a student has more than 4 backlogs?
+What is the grading system at VIIT? Explain the CGPA scale.
+What is the re-evaluation fee and when can I apply?
+Departments & Faculty
+Who is the HOD of CSE department?
+Who is the HOD of AI and Data Science department?
+What are the laboratories available in the E&TC department?
+What specializations does the IT department offer?
+Library & Facilities
+What are the library timings during examination period?
+How many books can an undergraduate student borrow and for how long?
+What is the fine for returning a book late?
+What digital resources are available to students?
+Hostel & Campus
+What are the hostel fee charges per semester?
+What are the mess timings at VIIT?
+What sports facilities are available on campus?
+Placements
+What is the minimum CGPA required for campus placements?
+Which companies visited VIIT in 2023-24 and what was the highest package?
+Deadlines
+When are the ISE 1 exams scheduled for the even semester 2025?
+
+
+
+
+Section 3   Reports
+Upcoming Deadlines Report
+Top Issues Report
+Select Top Issues, paste these 3 summaries into the 3 boxes:
+Summary 1 (Student):
+
+Summary 2 (Faculty):
+
+Summary 3 (Parent):
+
+
+uvicorn main:app --reload --port 8000
+
+uni_env\Scripts\activate

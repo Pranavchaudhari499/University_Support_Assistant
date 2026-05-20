@@ -1,0 +1,60 @@
+# ── Python ────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────────
+venv/
+myenv/
+uni_env/
+.env
+env/
+ENV/
+
+# ── ChromaDB store (large, rebuild with ingest.py) ────────────────
+ingestion/chroma_store/
+backend/chroma_store/
+
+# ── University data files (may contain sensitive info) ────────────
+ingestion/data/
+
+# ── Node / React ──────────────────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.local
+
+# ── Environment variables ─────────────────────────────────────────
+.env
+.env.local
+.env.production
+backend/.env
+
+# ── OS files ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE / Editor ──────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# ── Logs ──────────────────────────────────────────────────────────
+*.log
+logs/
+uvicorn.log
+
+# ── Misc ──────────────────────────────────────────────────────────
+*.zip
+*.tar.gz
+*.bak
