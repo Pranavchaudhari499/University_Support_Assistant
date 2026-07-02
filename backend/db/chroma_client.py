@@ -1,6 +1,6 @@
 """
 db/chroma_client.py
-Shared ChromaDB client — imported by rag_tool.py
+Shared ChromaDB client — imported by rag_tool.py and graph nodes.
 """
 
 from __future__ import annotations
@@ -44,8 +44,9 @@ def query_collection(
     n_results: int = 4,
 ) -> list[dict]:
     """
-    Embeds `query`, searches `collection_name` in ChromaDB,
-    returns list of { text, source, filename } dicts.
+    Embeds `query`, searches `collection_name` in ChromaDB.
+    Returns list of { text, source, filename, distance } dicts.
+    distance is a cosine distance (0 = identical, 1 = orthogonal).
     """
     client   = get_chroma_client()
     embedder = get_embedder()
@@ -55,18 +56,28 @@ def query_collection(
     except Exception:
         return []
 
+    count = collection.count()
+    if count == 0:
+        return []
+
     query_vec = embedder.embed_query(query)
     results   = collection.query(
         query_embeddings=[query_vec],
-        n_results=min(n_results, collection.count()),
-        include=["documents", "metadatas"],
+        n_results=min(n_results, count),
+        include=["documents", "metadatas", "distances"],
     )
 
     chunks = []
-    for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
+    docs      = results["documents"][0]
+    metas     = results["metadatas"][0]
+    distances = results["distances"][0]
+
+    for doc, meta, dist in zip(docs, metas, distances):
         chunks.append({
             "text":     doc,
             "source":   meta.get("source", ""),
             "filename": meta.get("filename", ""),
+            "distance": dist,   # lower = more similar (cosine space)
         })
+
     return chunks

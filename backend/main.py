@@ -1,16 +1,20 @@
 """
 main.py — VIIT University Support Agent API
 ============================================
+Run with:
     uvicorn main:app --reload --port 8000
 
 Endpoints:
-    POST /api/query      — RAG chat (streaming)
+    POST /api/agent      — Multi-agent graph (LangGraph) — main endpoint
+    POST /api/agent/stream — Streaming version of multi-agent graph
+    POST /api/query      — Legacy single RAG query (kept for backward compat)
     POST /api/summarize  — Feedback summarization
     POST /api/report     — Report generation
     GET  /api/health     — Health check
 """
 
 import os
+import json
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,15 +28,16 @@ from agent.tools.report_tool    import (
     generate_top_issues_report,
     generate_satisfaction_report,
 )
+from graph.graph import run_graph
 
 load_dotenv()
 
-# ── App setup ─────────────────────────────────────────────────────────────────
+# ── App setup ──────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="VIIT University Support Agent API",
-    version="1.0.0",
-    description="AI-powered support agent for VIIT students, faculty, and parents.",
+    version="2.0.0",
+    description="Multi-agent AI support system for VIIT students, faculty, and parents.",
 )
 
 app.add_middleware(
@@ -48,33 +53,106 @@ app.add_middleware(
 
 class QueryRequest(BaseModel):
     message: str
-    stream: bool = True          # default to streaming
+    stream: bool = True
+
+
+class AgentRequest(BaseModel):
+    message: str
+    student_profile: dict | None = None   # optional: {"branch": "CSE", "cgpa": 8.2, ...}
 
 
 class ReportRequest(BaseModel):
     type: str                    # 'upcoming_deadlines' | 'top_issues' | 'satisfaction_index'
-    summaries: list[str] = []    # for top_issues report
-    scores: dict = {}            # for satisfaction_index report
-                                 # e.g. {"student": 7.2, "faculty": 6.8, "parent": 8.1}
+    summaries: list[str] = []
+    scores: dict = {}
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "ok", "service": "VIIT Support Agent"}
+    return {"status": "ok", "service": "VIIT Multi-Agent Support System", "version": "2.0.0"}
 
 
-# ── 1. RAG Query (Chat) ───────────────────────────────────────────────────────
+# ── 1. Multi-Agent Graph (Main Endpoint) ──────────────────────────────────────
+
+@app.post("/api/agent")
+async def agent_query(request: AgentRequest):
+    """
+    Runs the full LangGraph multi-agent pipeline.
+    Returns { answer, sources, agent_trace, confidence, intent, agents_used }
+    """
+    if not request.message.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
+    result = run_graph(request.message, request.student_profile)
+    return result
+
+
+@app.post("/api/agent/stream")
+async def agent_query_stream(request: AgentRequest):
+    """
+    Streaming version of the multi-agent pipeline.
+    Yields SSE events for each agent step + final answer tokens.
+
+    Event types (as JSON in each SSE data field):
+        { "type": "trace",  "agent": "rag",   "status": "running", "detail": "..." }
+        { "type": "token",  "content": "..." }
+        { "type": "sources","sources": [...], "agents_used": [...] }
+        { "type": "done" }
+    """
+    if not request.message.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
+    def event_generator():
+        try:
+            # Run the full graph synchronously — it returns all trace info
+            result = run_graph(request.message, request.student_profile)
+
+            # 1. Emit all agent trace events
+            for step in result.get("agent_trace", []):
+                payload = json.dumps({"type": "trace", **step})
+                yield f"data: {payload}\n\n"
+
+            # 2. Stream the final answer token by token (simulate streaming)
+            answer = result.get("answer", "")
+            # Break answer into word chunks for a streaming feel
+            words = answer.split(" ")
+            for i in range(0, len(words), 3):
+                chunk   = " ".join(words[i:i+3]) + " "
+                payload = json.dumps({"type": "token", "content": chunk})
+                yield f"data: {payload}\n\n"
+
+            # 3. Emit sources + agents used
+            payload = json.dumps({
+                "type":        "sources",
+                "sources":     result.get("sources", []),
+                "agents_used": result.get("agents_used", []),
+                "confidence":  result.get("confidence", 0.0),
+                "intent":      result.get("intent", ""),
+            })
+            yield f"data: {payload}\n\n"
+
+            yield "data: {\"type\": \"done\"}\n\n"
+
+        except Exception as e:
+            payload = json.dumps({"type": "error", "detail": str(e)})
+            yield f"data: {payload}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── 2. Legacy RAG Query (Backward Compatible) ─────────────────────────────────
 
 @app.post("/api/query")
 async def query(request: QueryRequest):
     """
-    Accepts a student query, retrieves context from ChromaDB,
-    generates an answer using LLaMA 3.
-
-    If stream=true  → returns Server-Sent Events (text/event-stream)
-    If stream=false → returns JSON { answer, sources }
+    Legacy single-agent RAG endpoint.
+    Kept for backward compatibility with older frontend versions.
     """
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
@@ -83,7 +161,6 @@ async def query(request: QueryRequest):
         def event_generator():
             try:
                 for token in stream_rag_query(request.message):
-                    # SSE format: "data: <token>\n\n"
                     yield f"data: {token}\n\n"
                 yield "data: [DONE]\n\n"
             except Exception as e:
@@ -92,17 +169,14 @@ async def query(request: QueryRequest):
         return StreamingResponse(
             event_generator(),
             media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no",   # prevents nginx buffering
-            },
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
     else:
         result = run_rag_query(request.message)
         return result
 
 
-# ── 2. Feedback Summarization ─────────────────────────────────────────────────
+# ── 3. Feedback Summarization ─────────────────────────────────────────────────
 
 @app.post("/api/summarize")
 async def summarize(
@@ -111,10 +185,7 @@ async def summarize(
     respondent_type: str = Form("student"),
 ):
     """
-    Accepts survey feedback as either:
-      - A .txt or .csv file upload  (multipart/form-data)
-      - Raw text in the `text` form field
-
+    Accepts survey feedback as a .txt/.csv file or raw text.
     respondent_type: 'student' | 'faculty' | 'parent'
     Returns: { summary, respondent_type, total_chars, batch_count }
     """
@@ -126,15 +197,10 @@ async def summarize(
             feedback_text = raw.decode("utf-8")
         except UnicodeDecodeError:
             feedback_text = raw.decode("latin-1")
-
     elif text:
         feedback_text = text
-
     else:
-        raise HTTPException(
-            status_code=400,
-            detail="Provide either a file upload or a 'text' field.",
-        )
+        raise HTTPException(status_code=400, detail="Provide either a file upload or a 'text' field.")
 
     if not feedback_text.strip():
         raise HTTPException(status_code=400, detail="Feedback content is empty.")
@@ -143,19 +209,13 @@ async def summarize(
     return result
 
 
-# ── 3. Report Generation ──────────────────────────────────────────────────────
+# ── 4. Report Generation ──────────────────────────────────────────────────────
 
 @app.post("/api/report")
 async def report(request: ReportRequest):
     """
     Generates one of three report types:
-
-    upcoming_deadlines  → no extra data needed
-    top_issues          → requires request.summaries (list of summary strings)
-    satisfaction_index  → requires request.scores
-                          e.g. {"student": 7.2, "faculty": 6.8, "parent": 8.1}
-
-    Returns: { type, generated, report, ... }
+    upcoming_deadlines | top_issues | satisfaction_index
     """
     rtype = request.type.strip().lower()
 
@@ -164,23 +224,16 @@ async def report(request: ReportRequest):
 
     elif rtype == "top_issues":
         if not request.summaries:
-            raise HTTPException(
-                status_code=400,
-                detail="Provide 'summaries' list for top_issues report.",
-            )
+            raise HTTPException(status_code=400, detail="Provide 'summaries' list for top_issues report.")
         return generate_top_issues_report(request.summaries)
 
     elif rtype == "satisfaction_index":
         if not request.scores:
-            raise HTTPException(
-                status_code=400,
-                detail="Provide 'scores' dict for satisfaction_index report.",
-            )
+            raise HTTPException(status_code=400, detail="Provide 'scores' dict for satisfaction_index report.")
         return generate_satisfaction_report(request.scores)
 
     else:
         raise HTTPException(
             status_code=400,
-            detail=f"Unknown report type '{rtype}'. "
-                   f"Use: upcoming_deadlines | top_issues | satisfaction_index",
+            detail=f"Unknown report type '{rtype}'. Use: upcoming_deadlines | top_issues | satisfaction_index",
         )

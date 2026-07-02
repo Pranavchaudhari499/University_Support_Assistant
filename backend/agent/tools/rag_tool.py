@@ -1,14 +1,11 @@
-
 """
-agent/tools/rag_tool.py — Fixed RAG pipeline
-Improvements:
-  1. Smart collection routing — picks the right collection based on query intent
-  2. Query expansion — rewrites query to better match document language
-  3. Higher n_results — retrieves more chunks before filtering
-  4. Better prompt — stricter instruction to use context
+agent/tools/rag_tool.py — RAG pipeline (used by rag_node in the LangGraph graph)
+Retrieves relevant chunks from ChromaDB and generates an answer using the LLM.
+Searches all 3 collections with smart routing and query expansion.
 """
 
 import os
+from langchain_groq import ChatGroq
 from langchain_ollama import OllamaLLM
 from dotenv import load_dotenv
 
@@ -17,11 +14,22 @@ from agent.prompts import RAG_SYSTEM_PROMPT
 
 load_dotenv()
 
+GROQ_API_KEY    = os.getenv("GROQ_API_KEY")
+GROQ_MODEL      = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL", "llama3")
+OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL", "phi3")
 
+# ── LLM setup ─────────────────────────────────────────────────────────────────
 
-def _get_llm(streaming=False):
+def _get_llm(streaming: bool = False):
+    """Returns Groq LLM if API key present, else falls back to Ollama."""
+    if GROQ_API_KEY:
+        return ChatGroq(
+            model=GROQ_MODEL,
+            temperature=0.1,
+            api_key=GROQ_API_KEY,
+            streaming=streaming,
+        )
     return OllamaLLM(
         model=OLLAMA_MODEL,
         base_url=OLLAMA_BASE_URL,
@@ -31,8 +39,6 @@ def _get_llm(streaming=False):
 
 
 # ── Smart collection routing ──────────────────────────────────────────────────
-# Instead of searching all 3 collections (which adds noise),
-# pick the most relevant one(s) based on keywords in the query.
 
 COURSE_KEYWORDS  = ['course', 'subject', 'semester', 'curriculum', 'syllabus',
                     'department', 'hod', 'head', 'lab', 'laboratory', 'intake',
@@ -47,13 +53,12 @@ POLICY_KEYWORDS  = ['attendance', 'exam', 'fee', 'rule', 'policy', 'library',
                     'hostel', 'mess', 'placement', 'cgpa', 'backlog', 'atkt',
                     'deadline', 'grievance', 'anti-ragging', 'grading',
                     'scholarship', 'admission', 'result', 'revaluation',
-                    'fine', 'eligibility', 'internship', 'regulation']
+                    'fine', 'eligibility', 'internship', 'regulation', 'counseling']
 
 
 def _route_collections(query: str) -> list[str]:
     """Returns ordered list of collections to search based on query keywords."""
     q = query.lower()
-
     scores = {'policies': 0, 'courses': 0, 'events': 0}
     for kw in POLICY_KEYWORDS:
         if kw in q: scores['policies'] += 1
@@ -62,75 +67,71 @@ def _route_collections(query: str) -> list[str]:
     for kw in EVENT_KEYWORDS:
         if kw in q: scores['events'] += 1
 
-    # Sort by score descending — always search at least top 2
     ranked = sorted(scores, key=lambda k: scores[k], reverse=True)
-
-    # If top collection has clear signal, search it first with more results
-    # Always include at least 2 collections to avoid missing context
     if scores[ranked[0]] == 0:
-        return ['policies', 'courses', 'events']   # no signal — search all
-
-    return ranked   # return all, but ordered by relevance
+        return ['policies', 'courses', 'events']
+    return ranked
 
 
 # ── Query expansion ───────────────────────────────────────────────────────────
-# Rewrites the user query into terms that better match document language.
-# E.g. "who is HOD of CSE" → "Head of Department CSE Computer Science Dr contact email"
 
 EXPANSION_MAP = {
-    'hod':              'Head of Department',
-    'head':             'Head of Department',
-    'prof':             'Professor faculty',
-    'dr':               'Doctor faculty',
-    'timing':           'timings hours schedule',
-    'time':             'timings hours',
-    'fee':              'fees charges payment',
-    'fine':             'fine penalty charges',
-    'pass':             'passing marks minimum percentage',
-    'fail':             'fail failure minimum marks',
-    'cgpa':             'CGPA grade point average',
-    'backlog':          'backlog ATKT arrear failed subject',
-    'atkt':             'ATKT backlog allowed to keep terms',
-    'wifi':             'WiFi internet network connectivity',
-    'hostel':           'hostel accommodation residential',
-    'mess':             'mess food canteen meals',
-    'placement':        'placement training campus recruitment',
-    'internship':       'internship training industry',
-    'library':          'library books borrow reading',
-    're-evaluation':    're-evaluation revaluation answer sheet',
-    'grievance':        'grievance complaint redressal',
+    'hod':           'Head of Department',
+    'head':          'Head of Department',
+    'prof':          'Professor faculty',
+    'dr':            'Doctor faculty',
+    'timing':        'timings hours schedule',
+    'time':          'timings hours',
+    'fee':           'fees charges payment',
+    'fine':          'fine penalty charges',
+    'pass':          'passing marks minimum percentage',
+    'fail':          'fail failure minimum marks',
+    'cgpa':          'CGPA grade point average',
+    'backlog':       'backlog ATKT arrear failed subject',
+    'atkt':          'ATKT backlog allowed to keep terms',
+    'wifi':          'WiFi internet network connectivity',
+    'hostel':        'hostel accommodation residential',
+    'mess':          'mess food canteen meals',
+    'placement':     'placement training campus recruitment',
+    'internship':    'internship training industry',
+    'library':       'library books borrow reading',
+    're-evaluation': 're-evaluation revaluation answer sheet',
+    'grievance':     'grievance complaint redressal',
+    'counseling':    'counseling mental health support wellness',
 }
 
+
 def _expand_query(query: str) -> str:
-    """Expands abbreviations and adds related terms to improve retrieval."""
     q = query.lower()
-    expansions = []
-    for term, expansion in EXPANSION_MAP.items():
-        if term in q:
-            expansions.append(expansion)
-    if expansions:
-        return f"{query} {' '.join(expansions)}"
-    return query
+    expansions = [exp for term, exp in EXPANSION_MAP.items() if term in q]
+    return f"{query} {' '.join(expansions)}" if expansions else query
 
 
-# ── Retrieval ─────────────────────────────────────────────────────────────────
+# ── Retrieval with confidence filtering ──────────────────────────────────────
 
-def _retrieve_context(query: str) -> tuple[str, list[str]]:
+CONFIDENCE_THRESHOLD = 0.55   # skip chunks with cosine distance > this
+
+
+def _retrieve_context(query: str) -> tuple[str, list[str], float]:
+    """
+    Returns:
+        context      : formatted string for the prompt
+        sources      : list of source filenames
+        avg_score    : average retrieval confidence (0–1, higher = better)
+    """
     expanded_query = _expand_query(query)
     collections    = _route_collections(query)
+    n_results_map  = [5, 3, 2]
 
-    all_chunks = []
-    sources    = set()
-
-    # Search top collection with more results, others with fewer
-    n_results_map = [5, 3, 2]
+    all_chunks: list[dict] = []
+    sources: set[str] = set()
 
     for i, collection in enumerate(collections):
         n = n_results_map[i] if i < len(n_results_map) else 2
         chunks = query_collection(collection, expanded_query, n_results=n)
         all_chunks.extend(chunks)
         for c in chunks:
-            if c['filename']:
+            if c.get('filename'):
                 sources.add(c['filename'])
 
     # Deduplicate by text
@@ -141,38 +142,48 @@ def _retrieve_context(query: str) -> tuple[str, list[str]]:
             unique.append(c)
 
     if not unique:
-        return '', []
+        return '', [], 0.0
+
+    # Compute avg confidence from distance scores (ChromaDB returns L2 or cosine distances)
+    distances = [c.get('distance', 1.0) for c in unique]
+    avg_score = round(1 - (sum(distances) / len(distances)), 2)
 
     context_parts = [
         f"[Source: {c['filename']}]\n{c['text']}"
         for c in unique
     ]
-    return '\n\n---\n\n'.join(context_parts), list(sources)
+    return '\n\n---\n\n'.join(context_parts), list(sources), avg_score
 
 
 # ── Generation ────────────────────────────────────────────────────────────────
 
 def run_rag_query(query: str) -> dict:
-    context, sources = _retrieve_context(query)
+    """Full RAG pipeline — retrieve + generate. Returns {answer, sources, confidence}."""
+    context, sources, confidence = _retrieve_context(query)
 
     if not context:
         return {
             'answer': (
-                'I could not find relevant information for your query in the university documents. '
+                'I could not find relevant information in the university documents. '
                 'Please contact the university at +91-20-2605-2000 or visit portal.viit.ac.in'
             ),
             'sources': [],
+            'confidence': 0.0,
         }
 
     prompt = RAG_SYSTEM_PROMPT.format(context=context) + f'\n\nStudent Query: {query}\n\nAnswer:'
     llm    = _get_llm(streaming=False)
-    answer = llm.invoke(prompt)
 
-    return {'answer': answer.strip(), 'sources': sources}
+    # Handle both ChatGroq (returns AIMessage) and OllamaLLM (returns str)
+    response = llm.invoke(prompt)
+    answer   = response.content if hasattr(response, 'content') else str(response)
+
+    return {'answer': answer.strip(), 'sources': sources, 'confidence': confidence}
 
 
 def stream_rag_query(query: str):
-    context, sources = _retrieve_context(query)
+    """Generator — yields text tokens for streaming responses."""
+    context, sources, _ = _retrieve_context(query)
 
     if not context:
         yield 'I could not find relevant information in the university documents. '
@@ -182,5 +193,8 @@ def stream_rag_query(query: str):
     prompt = RAG_SYSTEM_PROMPT.format(context=context) + f'\n\nStudent Query: {query}\n\nAnswer:'
     llm    = _get_llm(streaming=True)
 
-    for token in llm.stream(prompt):
-        yield token
+    for chunk in llm.stream(prompt):
+        # Handle both ChatGroq chunks (AIMessageChunk) and OllamaLLM chunks (str)
+        token = chunk.content if hasattr(chunk, 'content') else str(chunk)
+        if token:
+            yield token

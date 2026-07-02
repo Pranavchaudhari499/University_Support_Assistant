@@ -23,18 +23,16 @@ from loaders import load_txt_files, chunk_documents
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
-# Where ChromaDB persists its data on disk
-CHROMA_PATH = "./chroma_store"
-
-# Ollama embedding model (100% local, no API key)
-EMBED_MODEL = "nomic-embed-text"
-OLLAMA_BASE_URL = "http://localhost:11434"
+CHROMA_PATH      = "./chroma_store"
+EMBED_MODEL      = "nomic-embed-text"
+OLLAMA_BASE_URL  = "http://localhost:11434"
 
 # Map collection name → folder path (relative to this script)
 COLLECTIONS = {
-    "policies": "./data/policies",
-    "courses":  "./data/courses",
-    "events":   "./data/events",
+    "policies":    "./data/policies",
+    "courses":     "./data/courses",
+    "events":      "./data/events",
+    "scholarships": "./data/scholarships",
 }
 
 
@@ -69,43 +67,34 @@ def ingest_collection(
     print(f"  Folder     : {folder}")
     print(f"{'='*55}")
 
-    # 1. Load raw .txt files from disk
     docs = load_txt_files(folder)
     if not docs:
         print("  [skip] nothing to ingest for this collection.")
         return
 
-    # 2. Chunk into smaller pieces
     chunks = chunk_documents(docs)
 
-    # 3. Delete old collection (if any) and create fresh
-    #    This ensures stale data is removed on re-ingestion
-    #    metadata={"hnsw:space": "cosine"} makes similarity search more accurate
+    # Delete old collection and recreate fresh
     try:
         client.delete_collection(name=collection_name)
         print(f"  [clean] deleted old '{collection_name}' collection")
     except Exception:
         pass  # collection didn't exist yet
+
     collection = client.create_collection(
         name=collection_name,
         metadata={"hnsw:space": "cosine"},
     )
 
-    # 4. Embed and upsert in batches of 50
     BATCH_SIZE = 50
-    total = len(chunks)
+    total      = len(chunks)
 
     for i in tqdm(range(0, total, BATCH_SIZE), desc=f"  Upserting {collection_name}"):
-        batch = chunks[i : i + BATCH_SIZE]
-
-        texts = [c.page_content for c in batch]
-        metadatas = [c.metadata for c in batch]
-
-        # Generate embeddings via Ollama locally
+        batch      = chunks[i : i + BATCH_SIZE]
+        texts      = [c.page_content for c in batch]
+        metadatas  = [c.metadata for c in batch]
         embeddings = embedder.embed_documents(texts)
-
-        # Build stable IDs: collection_name + chunk index
-        ids = [f"{collection_name}_{i + j}" for j, _ in enumerate(batch)]
+        ids        = [f"{collection_name}_{i + j}" for j, _ in enumerate(batch)]
 
         collection.upsert(
             ids=ids,
@@ -123,10 +112,9 @@ def main():
     print("\n University Support Agent — Ingestion Pipeline")
     print(" ================================================\n")
 
-    # Sanity check: make sure data folders exist
-    os.makedirs("./data/policies", exist_ok=True)
-    os.makedirs("./data/courses",  exist_ok=True)
-    os.makedirs("./data/events",   exist_ok=True)
+    # Ensure all data folders exist
+    for folder in COLLECTIONS.values():
+        os.makedirs(folder, exist_ok=True)
 
     print(f"  ChromaDB store : {CHROMA_PATH}")
     print(f"  Embedding model: {EMBED_MODEL}\n")
@@ -145,9 +133,9 @@ def main():
         try:
             col   = client.get_collection(name)
             count = col.count()
-            print(f"  {name:<12} -> {count} chunks stored")
+            print(f"  {name:<14} -> {count} chunks stored")
         except Exception:
-            print(f"  {name:<12} -> (not created - no files found)")
+            print(f"  {name:<14} -> (not created - no files found)")
 
     print("\n  Ingestion complete. ChromaDB is ready.\n")
 
