@@ -1,10 +1,11 @@
 // App.jsx
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
-import Sidebar        from './components/Sidebar'
-import ChatPage       from './pages/ChatPage'
-import FeedbackPage   from './pages/FeedbackPage'
-import ReportsPage    from './pages/ReportsPage'
-import useChatHistory from './hooks/useChatHistory'
+import Sidebar          from './components/Sidebar'
+import ChatPage         from './pages/ChatPage'
+import FeedbackPage     from './pages/FeedbackPage'
+import ReportsPage      from './pages/ReportsPage'
+import ScholarshipPage  from './pages/ScholarshipPage'
+import useChatHistory   from './hooks/useChatHistory'
 
 export default function App() {
   const history = useChatHistory()
@@ -27,9 +28,10 @@ export default function App() {
         <Sidebar historyProps={historyProps} />
         <main style={{ flex: 1, overflow: 'hidden' }}>
           <Routes>
-            <Route path="/"         element={<ChatPage historyProps={historyProps} />} />
-            <Route path="/feedback" element={<FeedbackPage />} />
-            <Route path="/reports"  element={<ReportsPage />} />
+            <Route path="/"             element={<ChatPage        historyProps={historyProps} />} />
+            <Route path="/scholarships" element={<ScholarshipPage />} />
+            <Route path="/feedback"     element={<FeedbackPage />} />
+            <Route path="/reports"      element={<ReportsPage />} />
           </Routes>
         </main>
       </div>
